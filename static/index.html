@@ -14,13 +14,13 @@
   </header>
 
   <div class="tabs">
-    <button id="tab-replay" class="tab active">Replay Mode</button>
-    <button id="tab-live" class="tab">Live Mode</button>
+    <button id="tab-replay" class="tab">Replay Mode</button>
+    <button id="tab-live" class="tab active">Live Mode</button>
   </div>
 
   <div id="map"></div>
 
-  <div class="panel" id="panel-replay">
+  <div class="panel hidden" id="panel-replay">
     <div class="row">
       <label>Demo trip:</label>
       <select id="trip-select"></select>
@@ -35,23 +35,29 @@
     </div>
   </div>
 
-  <div class="panel hidden" id="panel-live">
+  <div class="panel" id="panel-live">
     <div class="row">
       <button id="btn-start-live">Start Live Tracking</button>
+      <button id="btn-recenter" disabled>Recenter</button>
     </div>
+    <div class="row search-row">
+      <input type="text" id="destination-search" placeholder="Enter destination (e.g. a place or address)">
+      <button id="btn-route">Get Route</button>
+    </div>
+    <div id="geocode-results" class="geocode-results hidden"></div>
     <div class="row">
       <label class="switch">
         <input type="checkbox" id="toggle-outage-live">
-        <span>Simulate GNSS Outage (test indoors)</span>
+        <span>Force GNSS Outage (for indoor testing)</span>
       </label>
     </div>
-    <p class="hint">Requires phone sensor + location permission. Best used outdoors while moving, or toggle the outage switch to test dead reckoning indoors while walking with the phone.</p>
+    <p class="hint">Works like a normal map: allow location, optionally search a destination for a route, then move around. If your phone's GPS/network signal actually drops, TrueTrack automatically switches to AI-based dead reckoning until signal returns — you can also force this indoors with the toggle above.</p>
   </div>
 
   <div class="status">
     <div><span class="label">Mode</span><span id="status-mode">—</span></div>
     <div><span class="label">Speed</span><span id="status-speed">—</span></div>
-    <div><span class="label">Drift</span><span id="status-drift">—</span></div>
+    <div><span class="label">GPS</span><span id="status-gps">—</span></div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
