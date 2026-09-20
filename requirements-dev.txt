@@ -1,0 +1,6 @@
+# Local-only extras. Render does NOT install this file.
+# Needed for train_model.py and offline_eval.py (which plots drift_comparison.png).
+
+-r requirements.txt
+
+matplotlib>=3.8,<4.0

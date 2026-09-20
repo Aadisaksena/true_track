@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: truetrack
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    # --workers 1 is REQUIRED: replay/live sessions are held in per-process
+    # memory, so a second worker would 404 on sessions it never created.
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1"
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PIP_DISABLE_PIP_VERSION_CHECK
+        value: "1"

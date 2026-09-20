@@ -1,0 +1,16 @@
+# TrueTrack — runtime dependencies (production / Render)
+#
+# IMPORTANT — DO NOT DOWNGRADE numpy OR scikit-learn.
+# app/trained_model.joblib was pickled with scikit-learn 1.8.x on numpy 2.x.
+#   * numpy < 2.0  -> ModuleNotFoundError: No module named 'numpy._core'
+#   * scikit-learn < 1.7 -> HistGradientBoostingRegressor unpickle failure
+# Both were the cause of the previous Render deploy/runtime failures.
+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.9,<3.0
+
+numpy>=2.1,<3.0
+pandas>=2.2.3,<3.1
+scikit-learn>=1.8,<1.9
+joblib>=1.4,<2.0

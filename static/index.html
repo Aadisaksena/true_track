@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TrueTrack — Intelligent Dead Reckoning</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>TrueTrack</h1>
+    <span class="subtitle">AI-fused GNSS+INS navigation — SIH26168</span>
+  </header>
+
+  <div class="tabs">
+    <button id="tab-replay" class="tab active">Replay Mode</button>
+    <button id="tab-live" class="tab">Live Mode</button>
+  </div>
+
+  <div id="map"></div>
+
+  <div class="panel" id="panel-replay">
+    <div class="row">
+      <label>Demo trip:</label>
+      <select id="trip-select"></select>
+      <button id="btn-start-replay">Start</button>
+      <button id="btn-pause-replay" disabled>Pause</button>
+    </div>
+    <div class="row">
+      <label class="switch">
+        <input type="checkbox" id="toggle-outage-replay" checked>
+        <span>Simulate GNSS Outage</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel hidden" id="panel-live">
+    <div class="row">
+      <button id="btn-start-live">Start Live Tracking</button>
+    </div>
+    <div class="row">
+      <label class="switch">
+        <input type="checkbox" id="toggle-outage-live">
+        <span>Simulate GNSS Outage (test indoors)</span>
+      </label>
+    </div>
+    <p class="hint">Requires phone sensor + location permission. Best used outdoors while moving, or toggle the outage switch to test dead reckoning indoors while walking with the phone.</p>
+  </div>
+
+  <div class="status">
+    <div><span class="label">Mode</span><span id="status-mode">—</span></div>
+    <div><span class="label">Speed</span><span id="status-speed">—</span></div>
+    <div><span class="label">Drift</span><span id="status-drift">—</span></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
