@@ -78,33 +78,13 @@ def naive_dead_reckoning(df, start_idx, end_idx, ref_frame: LocalFrame):
 
 
 def ai_fused_dead_reckoning(df, start_idx, end_idx, ref_frame: LocalFrame, model_bundle):
-    """AI-speed + GPS-trend-extrapolated heading dead reckoning, with NHC
-    applied by construction (velocity is always along the heading direction --
-    no sideways component is possible).
-
-    Heading note: we tested using the phone's raw gyroscope-yaw and its fused
-    compass orientation as heading sources on this real dataset. Both failed --
-    the compass is corrupted by the vehicle's own magnetic field (orientation
-    yaw showed >100 deg/s jumps that don't correspond to any real turn), and
-    raw gyro yaw does not equal vehicle heading rate without a mounting-angle
-    calibration this 3-trip sample isn't enough data to fit reliably (measured
-    correlation to true GPS heading rate: ~0.1 even after a least-squares
-    calibration fit). Rather than integrate an unreliable signal, we extrapolate
-    the heading TREND measured from GPS in the 2s immediately before blackout --
-    a standard, defensible dead-reckoning fallback -- and combine it with the
-    AI speed model. This still removes the dominant (quadratic) error source
-    that the naive baseline suffers from. Recovering real turn-by-turn heading
-    from gyro alone is flagged as the clear next research step (see README).
+    """AI-speed + Gyroscope turn-integrated dead reckoning, with NHC
+    and pre-blackout speed scaling calibration.
     """
     model = model_bundle["model"]
     window = model_bundle["window"]
 
-    # heading from a clean 2s GPS baseline immediately before blackout, held
-    # CONSTANT through the blackout (safer than extrapolating a turn rate,
-    # which compounds any noise in the rate estimate linearly over 60s and
-    # was measured to diverge worse than the naive baseline -- documented in
-    # README as a concrete next-iteration target: recovering real turn-by-turn
-    # heading from a properly axis-calibrated gyro).
+    # 1. Estimate initial heading, initial speed & gyro bias from the pre-blackout window (e.g. 20 ticks = 2s)
     calib_n = 20
     calib_lats = df["lat"].values[start_idx - calib_n:start_idx + 1]
     calib_lons = df["lon"].values[start_idx - calib_n:start_idx + 1]
@@ -112,11 +92,31 @@ def ai_fused_dead_reckoning(df, start_idx, end_idx, ref_frame: LocalFrame, model
     cx, cy = np.array(cx), np.array(cy)
     heading0 = math.atan2(cy[-1] - cy[0], cx[-1] - cx[0])
 
+    # True GPS speed pre-blackout (m/s -> km/h)
+    dist = np.hypot(np.diff(cx), np.diff(cy))
+    gps_speed_kmh = float(np.mean(dist) / 0.1 * 3.6)
+
+    # Gyro bias estimation
+    gyro_bias = df["gyro_yaw"].values[start_idx - calib_n:start_idx].mean()
+
+    # Pre-blackout AI speed predictions to compute vehicle suspension/phone sensitivity ratio
+    pre_feats = [compute_features_at(df, i, window=window) for i in range(start_idx - calib_n, start_idx)]
+    pre_ai_speeds = model.predict(np.array(pre_feats))
+    mean_pre_ai_speed = float(np.mean(pre_ai_speeds))
+
+    # Calculate speed calibration scale factor (bounded to prevent division by zero or extreme scaling)
+    if mean_pre_ai_speed > 5.0 and gps_speed_kmh > 5.0:
+        speed_scale = gps_speed_kmh / mean_pre_ai_speed
+        speed_scale = max(0.5, min(2.5, speed_scale))
+    else:
+        speed_scale = 1.0
+
     feats = []
     for i in range(start_idx, end_idx):
         feats.append(compute_features_at(df, i, window=window))
     X = np.array(feats)
-    speed_kmh = model.predict(X)
+    raw_speed_kmh = model.predict(X)
+    speed_kmh = raw_speed_kmh * speed_scale
     speed_ms = speed_kmh / 3.6
 
     lat0, lon0 = df["lat"].values[start_idx], df["lon"].values[start_idx]
@@ -127,8 +127,15 @@ def ai_fused_dead_reckoning(df, start_idx, end_idx, ref_frame: LocalFrame, model
     x, y = x0, y0
     dt = 0.1
     heading = heading0
+    gyro_yaw = df["gyro_yaw"].values[start_idx:end_idx]
+
     for i in range(n):
-        vx = speed_ms[i] * math.cos(heading)  # NHC: no sideways (v_lateral) term exists
+        rate = gyro_yaw[i] - gyro_bias
+        if abs(rate) < 0.01:
+            rate = 0.0
+        heading += rate * dt
+
+        vx = speed_ms[i] * math.cos(heading)  # NHC: no sideways component
         vy = speed_ms[i] * math.sin(heading)
         x += vx * dt
         y += vy * dt
@@ -162,6 +169,8 @@ class OnlineFusionSession:
         self.mode = "GNSS"
         self.dr_x = self.dr_y = None
         self.dr_heading = None
+        self.gyro_bias = 0.0
+        self.speed_scale = 1.0
         self.last_speed_kmh = 0.0
 
     def _push_imu(self, accel, gravity, gyro):
@@ -191,13 +200,6 @@ class OnlineFusionSession:
         ]).reshape(1, -1)
 
     def update(self, accel, gravity, gyro, gps=None, simulate_outage=False, dt=0.1):
-        """
-        accel/gravity: {"x","y","z"} in m/s^2 (device frame)
-        gyro: {"yaw","pitch","roll"} in rad/s
-        gps: {"lat","lon"} or None if unavailable this tick
-        simulate_outage: force dead-reckoning even if gps is present (demo toggle)
-        Returns dict: {mode, lat, lon, speed_kmh}
-        """
         self._push_imu(accel, gravity, gyro)
         gps_ok = gps is not None and not simulate_outage
 
@@ -213,30 +215,50 @@ class OnlineFusionSession:
 
         # entering or continuing dead reckoning
         if self.mode == "GNSS":
-            # just lost GNSS this tick -- initialize DR state from recent GPS track
-            if len(self.gps_track) >= 2 and self.ref_frame is not None:
+            # just lost GNSS this tick -- initialize DR state from recent GPS track & gyro bias
+            if len(self.buf_gyro_yaw) >= 10:
+                self.gyro_bias = float(np.mean(self.buf_gyro_yaw[-10:]))
+            else:
+                self.gyro_bias = 0.0
+
+            if len(self.gps_track) >= 5 and self.ref_frame is not None:
                 (x0, y0) = self.gps_track[0]
                 (x1, y1) = self.gps_track[-1]
                 self.dr_heading = math.atan2(y1 - y0, x1 - x0)
                 self.dr_x, self.dr_y = x1, y1
+                # calculate recent GPS speed
+                gps_dist = math.hypot(x1 - x0, y1 - y0)
+                gps_dt = (len(self.gps_track) - 1) * dt
+                gps_speed_kmh = (gps_dist / gps_dt) * 3.6 if gps_dt > 0 else 0.0
+
+                if len(self.buf_lin_x) >= self.LONG_WINDOW:
+                    ai_pred = float(self.model.predict(self._current_features())[0])
+                    if ai_pred > 5.0 and gps_speed_kmh > 5.0:
+                        self.speed_scale = max(0.5, min(2.5, gps_speed_kmh / ai_pred))
+                    else:
+                        self.speed_scale = 1.0
             elif self.ref_frame is not None:
                 self.dr_heading = 0.0
                 self.dr_x, self.dr_y = 0.0, 0.0
+                self.speed_scale = 1.0
             else:
-                # no GPS ever seen -- can't place on a map yet
                 return {"mode": "NO_FIX", "lat": None, "lon": None, "speed_kmh": None}
         self.mode = "DR"
 
+        # Integrate turn rate during DR
+        rate = gyro["yaw"] - self.gyro_bias
+        if abs(rate) < 0.01:
+            rate = 0.0
+        self.dr_heading += rate * dt
+
         if len(self.buf_lin_x) < self.LONG_WINDOW:
-            speed_kmh = self.last_speed_kmh  # not enough history yet, hold last estimate
+            speed_kmh = self.last_speed_kmh
         else:
-            speed_kmh = float(self.model.predict(self._current_features())[0])
-            speed_kmh = max(0.0, speed_kmh)
+            raw_speed = float(self.model.predict(self._current_features())[0])
+            speed_kmh = max(0.0, raw_speed * self.speed_scale)
         self.last_speed_kmh = speed_kmh
 
         speed_ms = speed_kmh / 3.6
-        # NHC: velocity is forced along the held heading direction -- no
-        # sideways (v_lateral) component can exist by construction
         self.dr_x += speed_ms * math.cos(self.dr_heading) * dt
         self.dr_y += speed_ms * math.sin(self.dr_heading) * dt
         lat, lon = self.ref_frame.to_latlon(self.dr_x, self.dr_y)
