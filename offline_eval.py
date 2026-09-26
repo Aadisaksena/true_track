@@ -77,18 +77,53 @@ def main():
     naive_x, naive_y = naive_dead_reckoning(df, start_idx, end_idx, ref)
     ai_x, ai_y, ai_speed = ai_fused_dead_reckoning(df, start_idx, end_idx, ref, model_bundle)
 
-    total_distance = np.sum(np.hypot(np.diff(gt_x), np.diff(gt_y)))
-    naive_final_err = np.hypot(naive_x[-1] - gt_x[-1], naive_y[-1] - gt_y[-1])
-    ai_final_err = np.hypot(ai_x[-1] - gt_x[-1], ai_y[-1] - gt_y[-1])
-    naive_err_series = np.hypot(naive_x - gt_x, naive_y - gt_y)
-    ai_err_series = np.hypot(ai_x - gt_x, ai_y - gt_y)
+    gt_speed = df["speed_kmh"].values[start_idx:end_idx]
+    speed_err = np.abs(ai_speed - gt_speed)
+    speed_mae = np.mean(speed_err)
+    speed_rmse = np.sqrt(np.mean((ai_speed - gt_speed) ** 2))
+    max_speed_err = np.max(speed_err)
 
-    print(f"\nTotal distance travelled during blackout: {total_distance:.1f} m")
-    print(f"Naive double-integration final drift:      {naive_final_err:.1f} m "
-          f"({100*naive_final_err/total_distance:.1f}% of distance)")
-    print(f"AI-fused (TrueTrack) final drift:           {ai_final_err:.1f} m "
-          f"({100*ai_final_err/total_distance:.1f}% of distance)")
-    print(f"PS target: <10% of distance travelled")
+    total_distance = np.sum(np.hypot(np.diff(gt_x), np.diff(gt_y)))
+    pos_err = np.hypot(ai_x - gt_x, ai_y - gt_y)
+    mean_pos_err = np.mean(pos_err)
+    final_pos_err = pos_err[-1]
+
+    # Heading error estimation
+    gt_dx = np.diff(gt_x)
+    gt_dy = np.diff(gt_y)
+    gt_headings = np.arctan2(gt_dy, gt_dx)
+    gt_headings = np.append(gt_headings, gt_headings[-1])
+
+    ai_dx = np.diff(ai_x)
+    ai_dy = np.diff(ai_y)
+    ai_headings = np.arctan2(ai_dy, ai_dx)
+    ai_headings = np.append(ai_headings, ai_headings[-1])
+
+    heading_diffs = np.abs(np.arctan2(np.sin(ai_headings - gt_headings), np.cos(ai_headings - gt_headings)))
+    heading_err_deg = np.degrees(heading_diffs)
+    mean_heading_err_deg = np.mean(heading_err_deg)
+
+    # Lateral road offset error estimation
+    cos_h = np.cos(gt_headings)
+    sin_h = np.sin(gt_headings)
+    lateral_err = np.abs((ai_x - gt_x) * (-sin_h) + (ai_y - gt_y) * cos_h)
+    mean_lat_err = np.mean(lateral_err)
+    max_lat_err = np.max(lateral_err)
+
+    print(f"\n=======================================================")
+    print(f"OFFLINE EVALUATION METRICS (Vta01a - 60s GNSS Outage)")
+    print(f"=======================================================")
+    print(f"Total distance travelled:   {total_distance:.1f} m")
+    print(f"Speed MAE:                  {speed_mae:.2f} km/h")
+    print(f"Speed RMSE:                 {speed_rmse:.2f} km/h")
+    print(f"Maximum Speed Error:        {max_speed_err:.2f} km/h")
+    print(f"Mean Position Error:        {mean_pos_err:.2f} m")
+    print(f"Final Position Error:       {final_pos_err:.2f} m")
+    print(f"Drift (% of distance):      {100*final_pos_err/total_distance:.1f}%")
+    print(f"Mean Heading Error:         {mean_heading_err_deg:.2f}°")
+    print(f"Mean Lateral Road Offset:   {mean_lat_err:.2f} m")
+    print(f"Max Lateral Road Offset:    {max_lat_err:.2f} m")
+    print(f"=======================================================\n")
 
     # ---- plot ----
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
@@ -102,8 +137,7 @@ def main():
     ax.set_title(f"Trajectory during {BLACKOUT_SECONDS}s simulated GNSS blackout\n(Vta01a, held-out driver, straightest available stretch)")
     ax.legend(fontsize=9); ax.axis("equal"); ax.grid(alpha=0.3)
 
-    # duration sweep -- the most honest, informative result: shows naive's
-    # quadratic blowup vs AI-fused's much flatter error growth
+    # duration sweep -- duration sweep shows quadratic blowup vs AI-fused error growth
     durations = [10, 15, 20, 30, 45, 60]
     naive_pcts, ai_pcts = [], []
     for d in durations:
@@ -126,7 +160,7 @@ def main():
     plt.tight_layout()
     out_path = Path(__file__).parent / "drift_comparison.png"
     plt.savefig(out_path, dpi=150)
-    print(f"\nSaved plot to {out_path}")
+    print(f"Saved plot to {out_path}")
     print("\nDuration sweep (% drift of distance travelled):")
     for d, npct, apct in zip(durations, naive_pcts, ai_pcts):
         print(f"  {d:>3}s:  naive={npct:5.1f}%   ai_fused={apct:5.1f}%")
