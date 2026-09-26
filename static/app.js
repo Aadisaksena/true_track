@@ -16,7 +16,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 function createDirectionalMarker(color) {
   const icon = L.divIcon({
     className: 'custom-vehicle-marker',
-    html: `<div style="width: 20px; height: 20px; background: ${color}; border: 2.5px solid #ffffff; border-radius: 50%; box-shadow: 0 0 10px ${color};"></div>`,
+    html: `<div style="width: 20px; height: 20px; background: ${color}; border: 2.5px solid #ffffff; border-radius: 50%; box-shadow: 0 0 12px ${color};"></div>`,
     iconSize: [20, 20],
     iconAnchor: [10, 10]
   });
@@ -26,18 +26,18 @@ function createDirectionalMarker(color) {
 const style = (color, dashed) => ({ color, weight: 4, opacity: 0.85, dashArray: dashed ? '6 6' : null });
 
 // Map Layers & Markers
-const liveMarker = createDirectionalMarker('#38bdf8');
+const liveMarker = createDirectionalMarker('#2563eb');
 const destMarker = L.circleMarker([0, 0], { radius: 8, color: '#fff', weight: 2, fillColor: '#f43f5e', fillOpacity: 1 });
-const routeLine = L.polyline([], style('#38bdf8')).addTo(map);
-const liveTrail = L.polyline([], style('#38bdf8'));
+const routeLine = L.polyline([], style('#2563eb')).addTo(map);
+const liveTrail = L.polyline([], style('#0284c7'));
 
 const gtLine = L.polyline([], style('#10b981'));
 const naiveLine = L.polyline([], style('#f43f5e', true));
-const aiLine = L.polyline([], style('#38bdf8'));
+const aiLine = L.polyline([], style('#2563eb'));
 
 const gtMarker = createDirectionalMarker('#10b981');
 const naiveMarker = createDirectionalMarker('#f43f5e');
-const aiMarker = createDirectionalMarker('#38bdf8');
+const aiMarker = createDirectionalMarker('#2563eb');
 
 // --- UI Element References ---
 const navModeBadge = document.getElementById('nav-mode-badge');
@@ -73,7 +73,6 @@ let autoCameraFollow = true;
 map.on('dragstart', () => { autoCameraFollow = false; });
 
 function updateUIState(mode, speedKmh, headingDeg, confidence, uncertaintyM, detailText) {
-  // Mode Badge
   if (mode === 'DR') {
     navModeBadge.className = 'nav-mode-badge dr-active';
     navModeText.textContent = 'S.A.F.A.R. IDR';
@@ -94,16 +93,13 @@ function updateUIState(mode, speedKmh, headingDeg, confidence, uncertaintyM, det
     telState.textContent = 'GNSS_LOCKED';
   }
 
-  // Speed HUD
   const displaySpeed = speedKmh != null && !isNaN(speedKmh) ? Math.round(speedKmh) : 0;
   hudSpeed.textContent = displaySpeed;
 
-  // Confidence
   const confVal = confidence != null ? Math.round(confidence) : 95;
   hudConfidencePct.textContent = `${confVal}%`;
   hudConfidenceFill.style.width = `${confVal}%`;
 
-  // Telemetry details
   const headingVal = headingDeg != null ? `${headingDeg.toFixed(1)}°` : '0.0°';
   const uncertVal = uncertaintyM != null ? `± ${uncertaintyM.toFixed(1)} m` : '± 0.5 m';
   
@@ -112,7 +108,6 @@ function updateUIState(mode, speedKmh, headingDeg, confidence, uncertaintyM, det
   telHeading.textContent = headingVal;
   telUncertainty.textContent = uncertVal;
 
-  // Diagnostics modal updates
   diagFusedSpeed.textContent = `${displaySpeed} km/h`;
   diagDrHeading.textContent = headingVal;
   diagMode.textContent = mode || 'GNSS';
@@ -289,7 +284,6 @@ function onDeviceMotion(e) {
     };
   }
 
-  // Diagnostics
   if (diagAccel) {
     const accMag = Math.sqrt(a.x**2 + a.y**2 + a.z**2);
     diagAccel.textContent = `${accMag.toFixed(2)} m/s²`;
@@ -303,18 +297,36 @@ function onGeoSuccess(pos) {
   if (acc != null && acc > MAX_ACCEPTABLE_ACCURACY_M) return;
   latestGps = { lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: acc };
   lastFixTime = Date.now();
+  
   if (!haveEverFixed) {
     haveEverFixed = true;
     map.setView([latestGps.lat, latestGps.lon], 17);
     liveMarker.setLatLng([latestGps.lat, latestGps.lon]).addTo(map);
     liveTrail.addTo(map);
     document.getElementById('btn-recenter').disabled = false;
+  } else if (autoCameraFollow) {
+    liveMarker.setLatLng([latestGps.lat, latestGps.lon]);
+    map.panTo([latestGps.lat, latestGps.lon]);
   }
 }
 
 function onGeoError(err) {
   console.warn('Geolocation error:', err.message);
 }
+
+// Immediate Location Request on App Load (Problem 1 Fix)
+function initImmediateGeolocation() {
+  if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(onGeoSuccess, onGeoError, {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 10000,
+    });
+  }
+}
+
+// Fire location request immediately on startup
+initImmediateGeolocation();
 
 document.getElementById('btn-recenter').onclick = () => {
   autoCameraFollow = true;
@@ -336,9 +348,6 @@ document.getElementById('btn-start-live').onclick = async () => {
     alert('Browser does not support geolocation.');
     return;
   }
-  navigator.geolocation.watchPosition(onGeoSuccess, onGeoError, {
-    enableHighAccuracy: true, maximumAge: 0, timeout: 5000,
-  });
 
   const res = await fetch('/api/live/session/start', { method: 'POST' });
   const data = await res.json();
@@ -378,46 +387,97 @@ document.getElementById('btn-start-live').onclick = async () => {
   }, 100);
 };
 
-// --- Destination Geocoding & Routing ---
+// --- Destination Geocoding & Real-Time Autocomplete (Problem 2 Fix) ---
 let selectedDestination = null;
+let searchDebounceTimer = null;
+const searchInput = document.getElementById('destination-search');
+const geocodeResultsBox = document.getElementById('geocode-results');
 
-async function geocode(query) {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
-  if (!res.ok) throw new Error('Geocoding failed');
-  return res.json();
+// Live Autocomplete on typing
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim();
+  clearTimeout(searchDebounceTimer);
+
+  if (q.length < 2) {
+    geocodeResultsBox.classList.add('hidden');
+    return;
+  }
+
+  searchDebounceTimer = setTimeout(() => {
+    performSearch(q);
+  }, 250);
+});
+
+// Close dropdown on click outside
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-overlay')) {
+    geocodeResultsBox.classList.add('hidden');
+  }
+});
+
+async function performSearch(query) {
+  let url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
+  
+  // Location bias around user's current location if available
+  if (latestGps) {
+    const delta = 0.5;
+    const minLon = latestGps.lon - delta;
+    const maxLon = latestGps.lon + delta;
+    const minLat = latestGps.lat - delta;
+    const maxLat = latestGps.lat + delta;
+    url += `&viewbox=${minLon},${maxLat},${maxLon},${minLat}&bounded=0`;
+  }
+
+  try {
+    const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    if (!res.ok) return;
+    const results = await res.json();
+    renderGeocodeResults(results);
+  } catch (e) {
+    console.warn('Geocoding search failed:', e);
+  }
 }
 
-document.getElementById('btn-route').onclick = async () => {
-  const q = document.getElementById('destination-search').value.trim();
-  if (!q) return;
-  let results;
-  try {
-    results = await geocode(q);
-  } catch (e) {
-    alert('Could not search for location: ' + e.message);
+function renderGeocodeResults(results) {
+  if (!results || !results.length) {
+    geocodeResultsBox.innerHTML = '<div class="geocode-item no-match">No matching places found</div>';
+    geocodeResultsBox.classList.remove('hidden');
     return;
   }
-  const box = document.getElementById('geocode-results');
-  if (!results.length) {
-    box.innerHTML = '<div class="geocode-item">No results found.</div>';
-    box.classList.remove('hidden');
-    return;
-  }
-  box.innerHTML = results.map((r, i) =>
-    `<div class="geocode-item" data-i="${i}">${r.display_name}</div>`
-  ).join('');
-  box.classList.remove('hidden');
-  box.querySelectorAll('.geocode-item[data-i]').forEach(el => {
+
+  geocodeResultsBox.innerHTML = results.map((r, i) => {
+    const parts = r.display_name.split(',');
+    const mainTitle = parts[0];
+    const subTitle = parts.slice(1).join(',').trim();
+    return `
+      <div class="geocode-item" data-i="${i}">
+        <i class="fa-solid fa-location-dot item-icon"></i>
+        <div class="item-text">
+          <span class="item-name">${mainTitle}</span>
+          <span class="item-sub">${subTitle}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  geocodeResultsBox.classList.remove('hidden');
+
+  geocodeResultsBox.querySelectorAll('.geocode-item[data-i]').forEach(el => {
     el.onclick = () => {
-      const r = results[parseInt(el.dataset.i, 10)];
+      const i = parseInt(el.dataset.i, 10);
+      const r = results[i];
       selectedDestination = { lat: parseFloat(r.lat), lon: parseFloat(r.lon), label: r.display_name };
       destMarker.setLatLng([selectedDestination.lat, selectedDestination.lon]).addTo(map);
-      box.classList.add('hidden');
-      document.getElementById('destination-search').value = r.display_name;
+      geocodeResultsBox.classList.add('hidden');
+      searchInput.value = r.display_name;
       drawRoute();
     };
   });
+}
+
+document.getElementById('btn-route').onclick = () => {
+  const q = searchInput.value.trim();
+  if (q) performSearch(q);
 };
 
 async function drawRoute() {
@@ -438,7 +498,7 @@ async function drawRoute() {
     return;
   }
   if (!data.routes || !data.routes.length) {
-    alert('No route found.');
+    alert('No route found to that destination.');
     return;
   }
   const coords = data.routes[0].geometry.coordinates.map(([lon, lat]) => [lat, lon]);
